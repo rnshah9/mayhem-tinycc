@@ -1,0 +1,6 @@
+project: rnshah9/mayhem-tinyy
+target: tcc
+
+cmds:
+  - cmd: /tinycc/tcc @@
+    filepath: test.c
