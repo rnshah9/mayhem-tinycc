@@ -2,5 +2,5 @@ project: tinycc
 target: tcc
 
 cmds:
-  - cmd: /tinycc/tcc @@
+  - cmd: /tinycc/tcc test.c
     filepath: test.c
