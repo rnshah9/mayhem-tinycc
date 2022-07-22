@@ -2,5 +2,4 @@ project: tinycc
 target: tcc
 
 cmds:
-  - cmd: /tinycc/tcc test.c
-    filepath: test.c
+  - cmd: /install/bin/tcc @@
