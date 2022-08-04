@@ -21,14 +21,19 @@
 typedef __SIZE_TYPE__ uintptr_t;
 #endif
 
-#if defined(_WIN32) || \
-    (defined(__arm__) && \
-     (defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)))
+#if defined(_WIN32) \
+    || (defined(__arm__) \
+        && (defined(__FreeBSD__) \
+         || defined(__OpenBSD__) \
+         || defined(__NetBSD__) \
+         || defined __ANDROID__))
 #define LONG_LONG_FORMAT "%lld"
 #define ULONG_LONG_FORMAT "%llu"
+#define XLONG_LONG_FORMAT "%llx"
 #else
 #define LONG_LONG_FORMAT "%Ld"
 #define ULONG_LONG_FORMAT "%Lu"
+#define XLONG_LONG_FORMAT "%Lx"
 #endif
 
 // MinGW has 80-bit rather than 64-bit long double which isn't compatible with TCC or MSVC
@@ -1519,8 +1524,6 @@ struct structa1 {
     char f2;
 };
 
-struct structa1 ssta1;
-
 void struct_assign_test1(struct structa1 s1, int t, float f)
 {
     printf("%d %d %d %f\n", s1.f1, s1.f2, t, f);
@@ -1538,22 +1541,12 @@ void struct_assign_test(void)
     struct S {
       struct structa1 lsta1, lsta2;
       int i;
-    } s, *ps;
+    } s = {{1,2}, {3,4}}, *ps;
     
     ps = &s;
     ps->i = 4;
-#if 0
-    s.lsta1.f1 = 1;
-    s.lsta1.f2 = 2;
-    printf("%d %d\n", s.lsta1.f1, s.lsta1.f2);
-    s.lsta2 = s.lsta1;
-    printf("%d %d\n", s.lsta2.f1, s.lsta2.f2);
-#else
-    s.lsta2.f1 = 1;
-    s.lsta2.f2 = 2;
-#endif
+
     struct_assign_test1(ps->lsta2, 3, 4.5);
-    
     printf("before call: %d %d\n", s.lsta2.f1, s.lsta2.f2);
     ps->lsta2 = struct_assign_test2(ps->lsta2, ps->i);
     printf("after call: %d %d\n", ps->lsta2.f1, ps->lsta2.f2);
@@ -1565,6 +1558,9 @@ void struct_assign_test(void)
         { struct_assign_test }
     };
     printf("%d\n", struct_assign_test == t[0].elem);
+
+    s.lsta1 = s.lsta2 = struct_assign_test2(s.lsta1, 1);
+    printf("%d %d\n", s.lsta1.f1, s.lsta1.f2);
 }
 
 /* casts to short/char */
@@ -2274,7 +2270,7 @@ double ftab1[3] = { 1.2, 3.4, -5.6 };
 
 void float_test(void)
 {
-#if !defined(__arm__) || defined(__ARM_PCS_VFP)
+#if !defined(__arm__) || defined(__ARM_PCS_VFP) || defined __ANDROID__
     volatile float fa, fb;
     volatile double da, db;
     int a;
@@ -2540,7 +2536,7 @@ void longlong_test(void)
     b = 0x12345678;
     a = -1;
     c = a + b;
-    printf("%Lx\n", c);
+    printf(XLONG_LONG_FORMAT"\n", c);
 #endif
 
     /* long long reg spill test */
@@ -4254,8 +4250,9 @@ void func_arg_test(void)
 #define CORRECT_CR_HANDLING
 
 /* deprecated and no longer supported in gcc 3.3 */
+/* no longer supported by default in TinyCC */
 #ifdef __TINYC__
-# define ACCEPT_CR_IN_STRINGS
+/* # define ACCEPT_LF_IN_STRINGS */
 #endif
 
 /* keep this as the last test because GCC messes up line-numbers
@@ -4279,7 +4276,7 @@ ntf("aaa=%d\n", 3);
 \
 ntf("min=%d\n", 4);
 
-#ifdef ACCEPT_CR_IN_STRINGS
+#ifdef ACCEPT_LF_IN_STRINGS
     printf("len1=%d\n", strlen("
 "));
 #ifdef CORRECT_CR_HANDLING
@@ -4291,7 +4288,7 @@ ntf("min=%d\n", 4);
 "));
 #else
     printf("len1=1\nlen1=1 str[0]=10\nlen1=3\n");
-#endif /* ACCEPT_CR_IN_STRINGS */
+#endif /* ACCEPT_LF_IN_STRINGS */
 
 #ifdef __LINE__
     printf("__LINE__ defined\n");

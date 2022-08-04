@@ -509,11 +509,11 @@ ST_FUNC void put_extern_sym2(Sym *sym, int sh_num,
     update_storage(sym);
 }
 
-ST_FUNC void put_extern_sym(Sym *sym, Section *section,
-                           addr_t value, unsigned long size)
+ST_FUNC void put_extern_sym(Sym *sym, Section *s, addr_t value, unsigned long size)
 {
-    int sh_num = section ? section->sh_num : SHN_UNDEF;
-    put_extern_sym2(sym, sh_num, value, size, 1);
+    if (nocode_wanted && (NODATA_WANTED || (s && s == cur_text_section)))
+        return;
+    put_extern_sym2(sym, s ? s->sh_num : SHN_UNDEF, value, size, 1);
 }
 
 /* add a new relocation entry to symbol 'sym' in section 's' */
@@ -3468,25 +3468,42 @@ ST_FUNC void vstore(void)
     ft = vtop[-1].type.t;
     sbt = vtop->type.t & VT_BTYPE;
     dbt = ft & VT_BTYPE;
-
     verify_assign_cast(&vtop[-1].type);
 
     if (sbt == VT_STRUCT) {
         /* if structure, only generate pointer */
         /* structure assignment : generate memcpy */
-        /* XXX: optimize if small size */
-            size = type_size(&vtop->type, &align);
-
-            /* destination */
-            vswap();
+        size = type_size(&vtop->type, &align);
+        /* destination, keep on stack() as result */
+        vpushv(vtop - 1);
 #ifdef CONFIG_TCC_BCHECK
-            if (vtop->r & VT_MUSTBOUND)
-                gbound(); /* check would be wrong after gaddrof() */
+        if (vtop->r & VT_MUSTBOUND)
+            gbound(); /* check would be wrong after gaddrof() */
 #endif
-            vtop->type.t = VT_PTR;
-            gaddrof();
+        vtop->type.t = VT_PTR;
+        gaddrof();
+        /* source */
+        vswap();
+#ifdef CONFIG_TCC_BCHECK
+        if (vtop->r & VT_MUSTBOUND)
+            gbound();
+#endif
+        vtop->type.t = VT_PTR;
+        gaddrof();
 
-            /* address of memcpy() */
+#ifdef TCC_TARGET_NATIVE_STRUCT_COPY
+        if (1
+#ifdef CONFIG_TCC_BCHECK
+            && !tcc_state->do_bounds_check
+#endif
+            ) {
+            gen_struct_copy(size);
+        } else
+#endif
+        {
+            /* type size */
+            vpushi(size);
+            /* Use memmove, rather than memcpy, as dest and src may be same: */
 #ifdef TCC_ARM_EABI
             if(!(align & 7))
                 vpush_helper_func(TOK_memmove8);
@@ -3494,22 +3511,10 @@ ST_FUNC void vstore(void)
                 vpush_helper_func(TOK_memmove4);
             else
 #endif
-            /* Use memmove, rather than memcpy, as dest and src may be same: */
             vpush_helper_func(TOK_memmove);
-
-            vswap();
-            /* source */
-            vpushv(vtop - 2);
-#ifdef CONFIG_TCC_BCHECK
-            if (vtop->r & VT_MUSTBOUND)
-                gbound();
-#endif
-            vtop->type.t = VT_PTR;
-            gaddrof();
-            /* type size */
-            vpushi(size);
+            vrott(4);
             gfunc_call(3);
-        /* leave source on stack */
+        }
 
     } else if (ft & VT_BITFIELD) {
         /* bitfield store handling */
@@ -4472,7 +4477,7 @@ static int parse_btype(CType *type, AttributeDef *ad)
                     type_size(&type1, &n);
               } else {
                   n = expr_const();
-                  if (n <= 0 || (n & (n - 1)) != 0)
+                  if (n < 0 || (n & (n - 1)) != 0)
                     tcc_error("alignment must be a positive power of two");
               }
               skip(')');
@@ -5394,9 +5399,12 @@ ST_FUNC void unary(void)
 	       outside, so any reactivation of code emission (from labels
 	       or loop heads) can be disabled again after the end of it. */
             block(1);
-            /* or'ing to keep however possible CODE_OFF() from e.g. "return 0;"
-               in the statement expression */
-	    nocode_wanted |= saved_nocode_wanted;
+            /* If the statement expr can be entered, then we retain the current
+               nocode_wanted state (from e.g. a 'return 0;' in the stmt-expr).
+               If it can't be entered then the state is that from before the
+               statement expression.  */
+            if (saved_nocode_wanted)
+              nocode_wanted = saved_nocode_wanted;
             skip(')');
         } else {
             gexpr();
@@ -7660,6 +7668,10 @@ static void decl_initializer(init_params *p, CType *type, unsigned long c, int f
             }
 
 	    len = 0;
+            /* GNU extension: if the initializer is empty for a flex array,
+               it's size is zero.  We won't enter the loop, so set the size
+               now.  */
+            decl_design_flex(p, s, len);
 	    while (tok != '}' || (flags & DIF_HAVE_ELEM)) {
 		len = decl_designator(p, type, c, &f, flags, len);
 		flags &= ~DIF_HAVE_ELEM;
@@ -8254,7 +8266,7 @@ static int decl0(int l, int is_for_loop_init, Sym *func_sym)
                 sym = type.ref;
                 if (sym->f.func_type == FUNC_OLD && l == VT_CONST)
                     decl0(VT_CMP, 0, sym);
-#ifdef TCC_TARGET_MACHO
+#if defined TCC_TARGET_MACHO || defined TARGETOS_ANDROID
                 if (sym->f.func_alwinl
                     && ((type.t & (VT_EXTERN | VT_INLINE))
                         == (VT_EXTERN | VT_INLINE))) {

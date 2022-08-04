@@ -21,6 +21,9 @@
 #define USING_GLOBALS
 #include "tcc.h"
 
+/* #define to 1 to enable (see parse_pp_string()) */
+#define ACCEPT_LF_IN_STRINGS 0
+
 /********************************************************/
 /* global variables */
 
@@ -349,9 +352,10 @@ ST_INLN char *unicode_to_utf8 (char *b, uint32_t Uc)
 {
     if (Uc<0x80) *b++=Uc;
     else if (Uc<0x800) *b++=192+Uc/64, *b++=128+Uc%64;
-    else if (Uc-0xd800u<0x800) return b;
+    else if (Uc-0xd800u<0x800) goto error;
     else if (Uc<0x10000) *b++=224+Uc/4096, *b++=128+Uc/64%64, *b++=128+Uc%64;
     else if (Uc<0x110000) *b++=240+Uc/262144, *b++=128+Uc/4096%64, *b++=128+Uc/64%64, *b++=128+Uc%64;
+    else error: tcc_error("0x%x is not a valid universal character", Uc);
     return b;
 }
 
@@ -943,16 +947,23 @@ static uint8_t *parse_pp_string(uint8_t *p,
                 }
             }
         } else if (c == '\n') {
-            file->line_num++;
-            goto add_char;
+        add_lf:
+            if (ACCEPT_LF_IN_STRINGS) {
+                file->line_num++;
+                goto add_char;
+            } else if (str) { /* not skipping */
+                goto unterminated_string;
+            } else {
+                tcc_warning("missing terminating %c character", sep);
+                return p;
+            }
         } else if (c == '\r') {
             PEEKC_EOB(c, p);
             if (c != '\n') {
                 if (str)
                     cstr_ccat(str, '\r');
             } else {
-                file->line_num++;
-                goto add_char;
+                goto add_lf;
             }
         } else {
         add_char:
@@ -1008,6 +1019,7 @@ redo_start:
         case '\'':
             if (in_warn_or_error)
                 goto _default;
+            tok_flags &= ~TOK_FLAG_BOL;
             p = parse_pp_string(p, c, NULL);
             break;
         /* skip comments */
@@ -3701,6 +3713,9 @@ static const char * const target_os_defs =
 # else
     "__linux__\0"
     "__linux\0"
+#  if TARGETOS_ANDROID
+    "__ANDROID__\0"
+#  endif
 # endif
     "__unix__\0"
     "__unix\0"
@@ -3712,17 +3727,22 @@ static void putdef(CString *cs, const char *p)
     cstr_printf(cs, "#define %s%s\n", p, &" 1"[!!strchr(p, ' ')*2]);
 }
 
+static void putdefs(CString *cs, const char *p)
+{
+    while (*p)
+        putdef(cs, p), p = strchr(p, 0) + 1;
+}
+
 static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
 {
     int a, b, c;
-    const char *defs[] = { target_machine_defs, target_os_defs, NULL };
-    const char *p;
 
     sscanf(TCC_VERSION, "%d.%d.%d", &a, &b, &c);
     cstr_printf(cs, "#define __TINYC__ %d\n", a*10000 + b*100 + c);
-    for (a = 0; defs[a]; ++a)
-        for (p = defs[a]; *p; p = strchr(p, 0) + 1)
-            putdef(cs, p);
+
+    putdefs(cs, target_machine_defs);
+    putdefs(cs, target_os_defs);
+
 #ifdef TCC_TARGET_ARM
     if (s1->float_abi == ARM_HARD_FLOAT)
       putdef(cs, "__ARM_PCS_VFP");
@@ -3744,6 +3764,10 @@ static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
 #ifdef CONFIG_TCC_BCHECK
     if (s1->do_bounds_check)
       putdef(cs, "__BOUNDS_CHECKING_ON");
+#endif
+#ifdef CONFIG_TCC_BACKTRACE
+    if (s1->do_backtrace)
+      putdef(cs, "__TCC_BACKTRACE_ENABLED__");
 #endif
     cstr_printf(cs, "#define __SIZEOF_POINTER__ %d\n", PTR_SIZE);
     cstr_printf(cs, "#define __SIZEOF_LONG__ %d\n", LONG_SIZE);

@@ -68,8 +68,15 @@ static const struct {
     /* if default char is unsigned */
     {   VT_BYTE | VT_UNSIGNED, 1, DW_ATE_unsigned_char, "unsigned char:t25=r25;0;255;" },
     /* boolean type */
-    {   VT_BOOL, 1, DW_ATE_unsigned_char, "bool:t26=r26;0;255;" },
+    {   VT_BOOL, 1, DW_ATE_boolean, "bool:t26=r26;0;255;" },
+#if LONG_SIZE == 4
     {   VT_VOID, 1, DW_ATE_unsigned_char, "void:t27=27" },
+#else 
+    /* bitfields use these */
+    {   VT_LONG | VT_INT, 8, DW_ATE_signed, "long int:t27=r27;-9223372036854775808;9223372036854775807;" },
+    {   VT_LONG | VT_INT | VT_UNSIGNED, 8, DW_ATE_unsigned, "long unsigned int:t28=r28;0;01777777777777777777777;" },
+    {   VT_VOID, 1, DW_ATE_unsigned_char, "void:t29=29" },
+#endif
 };
 
 #define	N_DEFAULT_DEBUG	(sizeof (default_debug) / sizeof (default_debug[0]))
@@ -98,17 +105,18 @@ static const struct {
 #define	DWARF_ABBREV_ARRAY_TYPE			8
 #define	DWARF_ABBREV_SUBRANGE_TYPE		9
 #define	DWARF_ABBREV_TYPEDEF			10
-#define	DWARF_ABBREV_ENUMERATOR			11
-#define	DWARF_ABBREV_ENUMERATION_TYPE		12
-#define	DWARF_ABBREV_MEMBER			13
-#define	DWARF_ABBREV_MEMBER_BF			14
-#define	DWARF_ABBREV_STRUCTURE_TYPE		15
-#define	DWARF_ABBREV_UNION_TYPE			16
-#define	DWARF_ABBREV_SUBPROGRAM_EXTERNAL	17
-#define	DWARF_ABBREV_SUBPROGRAM_STATIC		18
-#define	DWARF_ABBREV_LEXICAL_BLOCK		19
-#define	DWARF_ABBREV_SUBROUTINE_TYPE		20
-#define	DWARF_ABBREV_FORMAL_PARAMETER2		21
+#define	DWARF_ABBREV_ENUMERATOR_SIGNED		11
+#define	DWARF_ABBREV_ENUMERATOR_UNSIGNED	12
+#define	DWARF_ABBREV_ENUMERATION_TYPE		13
+#define	DWARF_ABBREV_MEMBER			14
+#define	DWARF_ABBREV_MEMBER_BF			15
+#define	DWARF_ABBREV_STRUCTURE_TYPE		16
+#define	DWARF_ABBREV_UNION_TYPE			17
+#define	DWARF_ABBREV_SUBPROGRAM_EXTERNAL	18
+#define	DWARF_ABBREV_SUBPROGRAM_STATIC		19
+#define	DWARF_ABBREV_LEXICAL_BLOCK		20
+#define	DWARF_ABBREV_SUBROUTINE_TYPE		21
+#define	DWARF_ABBREV_FORMAL_PARAMETER2		22
 
 /* all entries should have been generated with dwarf_uleb128 except
    has_children. All values are currently below 128 so this currently
@@ -175,9 +183,13 @@ static const unsigned char dwarf_abbrev_init[] = {
           DW_AT_decl_line, DW_FORM_udata,
           DW_AT_type, DW_FORM_ref4,
           0, 0,
-    DWARF_ABBREV_ENUMERATOR, DW_TAG_enumerator, 0,
+    DWARF_ABBREV_ENUMERATOR_SIGNED, DW_TAG_enumerator, 0,
           DW_AT_name, DW_FORM_strp,
-          DW_AT_const_value, DW_FORM_data4,
+          DW_AT_const_value, DW_FORM_sdata,
+          0, 0,
+    DWARF_ABBREV_ENUMERATOR_UNSIGNED, DW_TAG_enumerator, 0,
+          DW_AT_name, DW_FORM_strp,
+          DW_AT_const_value, DW_FORM_udata,
           0, 0,
     DWARF_ABBREV_ENUMERATION_TYPE, DW_TAG_enumeration_type, 1,
           DW_AT_name, DW_FORM_strp,
@@ -380,9 +392,7 @@ ST_FUNC void tcc_debug_new(TCCState *s1)
 #ifdef CONFIG_TCC_BACKTRACE
     /* include stab info with standalone backtrace support */
     if (s1->do_backtrace
-        && (s1->output_type == TCC_OUTPUT_EXE
-         || s1->output_type == TCC_OUTPUT_DLL)
-         )
+        && (s1->output_type & (TCC_OUTPUT_EXE | TCC_OUTPUT_DLL)))
         shf = SHF_ALLOC | SHF_WRITE; // SHF_WRITE needed for musl/SELINUX
 #endif
     if (s1->dwarf) {
@@ -536,7 +546,7 @@ static void dwarf_file(TCCState *s1)
 
     filename = strrchr(file->filename, '/');
     if (filename == NULL) {
-        for (i = 1; i < dwarf_line.filename_size; i++)
+        for (i = 0; i < dwarf_line.filename_size; i++)
             if (dwarf_line.filename_table[i].dir_entry == 0 &&
 		strcmp(dwarf_line.filename_table[i].name,
 		file->filename) == 0) {
@@ -552,7 +562,7 @@ static void dwarf_file(TCCState *s1)
         for (i = 0; i < dwarf_line.dir_size; i++)
 	    if (strcmp(dwarf_line.dir_table[i], file->filename) == 0)
 		for (j = 1; j < dwarf_line.filename_size; j++)
-		    if (dwarf_line.filename_table[i].dir_entry == i &&
+		    if (dwarf_line.filename_table[j].dir_entry == i &&
 			strcmp(dwarf_line.filename_table[j].name,
 			filename) == 0) {
 			*undo = '/';
@@ -579,17 +589,16 @@ static int dwarf_uleb128_size (unsigned long long value)
 
 static int dwarf_sleb128_size (long long value)
 {
-    int more;
     int size =  0;
+    long long end = value >> 63;
+    unsigned char last = end & 0x40;
+    unsigned char byte;
 
     do {
-        unsigned char byte = value & 0x7f;
-
-        value = (value >> 7) | ~(-1 >> 7);
-        more =!((((value == 0) && ((byte & 0x40) == 0))
-                || ((value == -1) && ((byte & 0x40) != 0))));
+        byte = value & 0x7f;
+        value >>= 7;
         size++;
-    } while (more);
+    } while (value != end || (byte & 0x40) != last);
     return size;
 }
 
@@ -599,25 +608,22 @@ static void dwarf_uleb128 (Section *s, unsigned long long value)
         unsigned char byte = value & 0x7f;
 
         value >>= 7;
-        if (value)
-            byte |= 0x80;
-        dwarf_data1(s, byte);
+        dwarf_data1(s, byte | (value ? 0x80 : 0));
     } while (value != 0);
 }
 
 static void dwarf_sleb128 (Section *s, long long value)
 {
     int more;
+    long long end = value >> 63;
+    unsigned char last = end & 0x40;
 
     do {
         unsigned char byte = value & 0x7f;
 
-        value = (value >> 7) | ~(-1 >> 7);
-        more =!((((value == 0) && ((byte & 0x40) == 0))
-                || ((value == -1) && ((byte & 0x40) != 0))));
-	if (more)
-            byte |= 0x80;
-        dwarf_data1(s, byte);
+        value >>= 7;
+	more = value != end || (byte & 0x40) != last;
+        dwarf_data1(s, byte | (0x80 * more));
     } while (more);
 }
 
@@ -627,25 +633,22 @@ static void dwarf_uleb128_op (TCCState *s1, unsigned long long value)
         unsigned char byte = value & 0x7f;
 
         value >>= 7;
-        if (value)
-            byte |= 0x80;
-        dwarf_line_op(s1, byte);
+        dwarf_line_op(s1, byte | (value ? 0x80 : 0));
     } while (value != 0);
 }
 
 static void dwarf_sleb128_op (TCCState *s1, long long value)
 {
     int more;
+    long long end = value >> 63;
+    unsigned char last = end & 0x40;
 
     do {
         unsigned char byte = value & 0x7f;
 
-        value = (value >> 7) | ~(-1 >> 7);
-        more =!((((value == 0) && ((byte & 0x40) == 0))
-                || ((value == -1) && ((byte & 0x40) != 0))));
-	if (more)
-            byte |= 0x80;
-        dwarf_line_op(s1, byte);
+        value >>= 7;
+        more = value != end || (byte & 0x40) != last;
+        dwarf_line_op(s1, byte | (0x80 * more));
     } while (more);
 }
 
@@ -680,6 +683,7 @@ ST_FUNC void tcc_debug_start(TCCState *s1)
         if (s1->dwarf) {
             int start_abbrev;
             unsigned char *ptr;
+	    char *undo;
 
             /* dwarf_abbrev */
             start_abbrev = dwarf_abbrev_section->data_offset;
@@ -770,18 +774,32 @@ ST_FUNC void tcc_debug_start(TCCState *s1)
             dwarf_data1(dwarf_line_section, DWARF_OPCODE_BASE);
             ptr = section_ptr_add(dwarf_line_section, sizeof(dwarf_line_opcodes));
             memcpy(ptr, dwarf_line_opcodes, sizeof(dwarf_line_opcodes));
-            dwarf_line.dir_size = 1;
-            dwarf_line.dir_table = (char **) tcc_malloc(sizeof (char *));
+	    undo = strrchr(filename, '/');
+	    if (undo)
+		*undo = 0;
+            dwarf_line.dir_size = 1 + (undo != NULL);
+            dwarf_line.dir_table = (char **) tcc_malloc(sizeof (char *) *
+							dwarf_line.dir_size);
             dwarf_line.dir_table[0] = tcc_strdup(buf);
-            /* line state machine starts with file 1 instead of 0 */
+	    if (undo)
+                dwarf_line.dir_table[1] = tcc_strdup(filename);
             dwarf_line.filename_size = 2;
             dwarf_line.filename_table =
     	        (struct dwarf_filename_struct *)
     	        tcc_malloc(2*sizeof (struct dwarf_filename_struct));
             dwarf_line.filename_table[0].dir_entry = 0;
-            dwarf_line.filename_table[0].name = tcc_strdup(filename);
-            dwarf_line.filename_table[1].dir_entry = 0;
-            dwarf_line.filename_table[1].name = tcc_strdup(filename);
+	    if (undo) {
+                dwarf_line.filename_table[0].name = tcc_strdup(filename);
+                dwarf_line.filename_table[1].dir_entry = 1;
+                dwarf_line.filename_table[1].name = tcc_strdup(undo + 1);
+		*undo = '/';
+                dwarf_line.filename_table[0].name = tcc_strdup(filename);
+	    }
+	    else {
+                dwarf_line.filename_table[0].name = tcc_strdup(filename);
+                dwarf_line.filename_table[1].dir_entry = 0;
+                dwarf_line.filename_table[1].name = tcc_strdup(filename);
+	    }
             dwarf_line.line_size = dwarf_line.line_max_size = 0;
             dwarf_line.line_data = NULL;
             dwarf_line.cur_file = 1;
@@ -1015,7 +1033,8 @@ ST_FUNC void tcc_debug_bincl(TCCState *s1)
 	}
         if (strcmp(filename, "<command line>")) {
 	    for (j = 0; j < dwarf_line.filename_size; j++)
-	        if (strcmp (dwarf_line.filename_table[j].name, filename) == 0)
+	        if (dwarf_line.filename_table[j].dir_entry == i &&
+		    strcmp (dwarf_line.filename_table[j].name, filename) == 0)
 		    break;
 	    if (j == dwarf_line.filename_size) {
 	        dwarf_line.filename_table =
@@ -1222,7 +1241,10 @@ ST_FUNC void tcc_debug_fix_anon(TCCState *s1, CType *t)
 	    if (t->ref == debug_anon_hash[i].type) {
 		Sym sym = {0}; sym .type = *t ;
 
+		/* Trick to not hash this struct */
+		debug_info = (struct _debug_info *) t;
 		debug_type = tcc_get_dwarf_info(s1, &sym);
+		debug_info = NULL;
 		for (j = 0; j < debug_anon_hash[i].n_debug_type; j++)
 		    write32le(dwarf_info_section->data +
 			      debug_anon_hash[i].debug_type[j],
@@ -1380,6 +1402,8 @@ static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
     int last_pos = -1;
     int retval;
 
+    if (new_file)
+        put_new_file(s1);
     for (;;) {
         type = t->type.t & ~(VT_STORAGE | VT_CONSTANT | VT_VOLATILE | VT_VLA);
         if ((type & VT_BTYPE) != VT_BYTE)
@@ -1418,32 +1442,25 @@ static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
 	    i = 0;
             while (e->next) {
                 e = e->next;
+	        dwarf_data1(dwarf_info_section,
+			    e->type.t & VT_BITFIELD ? DWARF_ABBREV_MEMBER_BF
+						    : DWARF_ABBREV_MEMBER);
+		dwarf_strp(dwarf_info_section,
+			   (e->v & ~SYM_FIELD) >= SYM_FIRST_ANOM
+			   ? "" : get_tok_str(e->v & ~SYM_FIELD, NULL));
+		dwarf_uleb128(dwarf_info_section, dwarf_line.cur_file);
+		dwarf_uleb128(dwarf_info_section, file->line_num);
+		pos_type[i++] = dwarf_info_section->data_offset;
+		dwarf_data4(dwarf_info_section, 0);
                 if (e->type.t & VT_BITFIELD) {
                     int pos = e->c * 8 + BIT_POS(e->type.t);
                     int size = BIT_SIZE(e->type.t);
 
-	            dwarf_data1(dwarf_info_section, DWARF_ABBREV_MEMBER_BF);
-		    dwarf_strp(dwarf_info_section,
-			       (e->v & ~SYM_FIELD) >= SYM_FIRST_ANOM
-			       ? "" : get_tok_str(e->v & ~SYM_FIELD, NULL));
-		    dwarf_uleb128(dwarf_info_section, dwarf_line.cur_file);
-		    dwarf_uleb128(dwarf_info_section, file->line_num);
-		    pos_type[i++] = dwarf_info_section->data_offset;
-		    dwarf_data4(dwarf_info_section, 0);
 		    dwarf_uleb128(dwarf_info_section, size);
 		    dwarf_uleb128(dwarf_info_section, pos);
 		}
-		else {
-	            dwarf_data1(dwarf_info_section, DWARF_ABBREV_MEMBER);
-		    dwarf_strp(dwarf_info_section,
-			       (e->v & ~SYM_FIELD) >= SYM_FIRST_ANOM
-			       ? "" : get_tok_str(e->v & ~SYM_FIELD, NULL));
-		    dwarf_uleb128(dwarf_info_section, dwarf_line.cur_file);
-		    dwarf_uleb128(dwarf_info_section, file->line_num);
-		    pos_type[i++] = dwarf_info_section->data_offset;
-		    dwarf_data4(dwarf_info_section, 0);
+		else
 		    dwarf_uleb128(dwarf_info_section, e->c);
-		}
 	    }
 	    dwarf_data1(dwarf_info_section, 0);
 	    write32le(dwarf_info_section->data + pos_sib,
@@ -1467,7 +1484,7 @@ static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
 	debug_type = tcc_debug_find(s1, t, 1);
 	if (debug_type == -1) {
 	    int pos_sib, pos_type;
-	    Sym sym = {0}; sym  .type.t = VT_INT | (type & VT_UNSIGNED) ;
+	    Sym sym = {0}; sym.type.t = VT_INT | (type & VT_UNSIGNED);
 
 	    pos_type = tcc_get_dwarf_info(s1, &sym);
 	    debug_type = tcc_debug_add(s1, t, 1);
@@ -1486,11 +1503,16 @@ static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
 	    e = t;
             while (e->next) {
                 e = e->next;
-	        dwarf_data1(dwarf_info_section, DWARF_ABBREV_ENUMERATOR);
+	        dwarf_data1(dwarf_info_section,
+			type & VT_UNSIGNED ? DWARF_ABBREV_ENUMERATOR_UNSIGNED
+					   : DWARF_ABBREV_ENUMERATOR_SIGNED);
 	        dwarf_strp(dwarf_info_section,
                            (e->v & ~SYM_FIELD) >= SYM_FIRST_ANOM
                            ? "" : get_tok_str(e->v & ~SYM_FIELD, NULL));
-	        dwarf_data4(dwarf_info_section, e->enum_val);
+		if (type & VT_UNSIGNED)
+	            dwarf_uleb128(dwarf_info_section, e->enum_val);
+		else
+	            dwarf_sleb128(dwarf_info_section, e->enum_val);
             }
 	    dwarf_data1(dwarf_info_section, 0);
 	    write32le(dwarf_info_section->data + pos_sib,
@@ -1521,6 +1543,7 @@ static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
 	}
     }
     retval = debug_type;
+    e = NULL;
     t = s;
     for (;;) {
         type = t->type.t & ~(VT_STORAGE | VT_CONSTANT | VT_VOLATILE | VT_VLA);
@@ -1543,7 +1566,11 @@ static int tcc_get_dwarf_info(TCCState *s1, Sym *s)
 	}
         else if (type == (VT_PTR | VT_ARRAY)) {
 	    int sib_pos, sub_type;
-	    Sym sym = {0}; sym .type.t = VT_INT | VT_UNSIGNED ;
+#if LONG_SIZE == 4
+	    Sym sym = {0}; sym.type.t = VT_LONG | VT_INT | VT_UNSIGNED;
+#else
+	    Sym sym = {0}; sym.type.t = VT_LLONG | VT_LONG | VT_UNSIGNED;
+#endif
 
 	    sub_type = tcc_get_dwarf_info(s1, &sym);
 	    i = dwarf_info_section->data_offset;
@@ -1761,15 +1788,17 @@ ST_FUNC void tcc_debug_funcstart(TCCState *s1, Sym *sym)
 
     if (s1->dwarf) {
         tcc_debug_line(s1);
+	dwarf_line_op(s1, DW_LNS_copy);
         dwarf_info.func = sym;
         dwarf_info.line = file->line_num;
 	if (s1->do_backtrace) {
-	    int i;
+	    int i, len;
 
 	    dwarf_line_op(s1, 0); // extended
 	    dwarf_uleb128_op(s1, strlen(funcname) + 2);
 	    dwarf_line_op(s1, DW_LNE_hi_user - 1);
-	    for (i = 0; i < strlen(funcname) + 1; i++)
+	    len = strlen(funcname) + 1;
+	    for (i = 0; i < len; i++)
 		dwarf_line_op(s1, funcname[i]);
 	}
     }
